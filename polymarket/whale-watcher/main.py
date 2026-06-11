@@ -32,6 +32,7 @@ os.environ['HTTP_PROXY'] = os.getenv('HTTP_PROXY', '')
 # ──────────────────────────────────────────────────────────────────────────────
 import asyncio
 import logging
+import re
 import signal
 import sys
 import time
@@ -39,7 +40,9 @@ from decimal import Decimal
 
 from config import (
     MIN_TRADE_SIZE_USD,
+    MIN_WIN_RATE,
     POLL_INTERVAL_SECONDS,
+    REQUIRE_POSITIVE_PNL,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     TRADES_PAGE_SIZE,
@@ -140,6 +143,32 @@ def _format_stats(stats: dict | None) -> str:
     )
 
 
+def _passes_quality_filter(stats: dict | None) -> tuple[bool, str]:
+    """
+    Check whether a whale's stats meet the quality thresholds.
+
+    Returns (True, "") if the trade should be alerted, or
+    (False, reason_string) if it should be skipped.
+
+    When stats are None or a metric is unavailable (None), that filter is
+    not applied — we err on the side of alerting rather than silently dropping.
+    """
+    if stats is None:
+        return True, ""
+
+    # --- PnL filter ---
+    pnl = stats.get('pnl')
+    if REQUIRE_POSITIVE_PNL and pnl is not None and pnl < 0:
+        return False, f"negative PnL (${pnl:,.0f})"
+
+    # --- Win-rate filter ---
+    win_rate = stats.get('win_rate')
+    if win_rate is not None and win_rate < MIN_WIN_RATE:
+        return False, f"win rate too low ({win_rate * 100:.0f}% < {MIN_WIN_RATE * 100:.0f}%)"
+
+    return True, ""
+
+
 def _format_alert(trade, stats: dict | None = None) -> str:
     """
     Build an HTML-formatted Telegram message for a whale trade.
@@ -165,7 +194,7 @@ def _format_alert(trade, stats: dict | None = None) -> str:
         f"{side_emoji} <b>Side:</b> {trade.side or '—'}",
         f"💰 <b>Size:</b> ${usd_value:,.0f}",
         f"📈 <b>Price:</b> {price_cents:.1f}¢",
-        f"👛 <b>Wallet:</b> <code>{_short_addr(str(trade.wallet) if trade.wallet else None)}</code>",
+        f"👛 <b>Wallet:</b> <a href=\"https://polymarket.com/{trade.wallet}\">{_short_addr(str(trade.wallet) if trade.wallet else None)}</a>",
         f"⏰ <b>Time:</b> {timestamp_str}",
         f"🔗 <b>TX:</b> <code>{_short_addr(str(trade.transaction_hash) if trade.transaction_hash else None)}</code>",
         "",
@@ -219,6 +248,14 @@ def tg_error(msg: str) -> None:
 # Trade fetching
 # ──────────────────────────────────────────────────────────────────────────────
 
+_VS_PATTERN = re.compile(r'\bvs\.?\b', re.IGNORECASE)
+
+
+def _is_sports_market(title: str | None) -> bool:
+    """Return True if the market title looks like a sports matchup (Team A vs Team B)."""
+    return bool(title and _VS_PATTERN.search(title))
+
+
 def fetch_whale_trades(client: PublicClient) -> list:
     """
     Fetch the most recent page of trades with cash value >= MIN_TRADE_SIZE_USD.
@@ -241,6 +278,7 @@ def fetch_whale_trades(client: PublicClient) -> list:
     return [
         t for t in trades
         if (t.size or Decimal(0)) * (t.price or Decimal(0)) >= min_usd
+        and not _is_sports_market(t.title)
     ]
 
 
@@ -257,13 +295,16 @@ def main():
     any transaction hash not seen before.
     """
     log.info("Starting Polymarket Whale Watcher")
-    log.info(f"  Threshold : ${MIN_TRADE_SIZE_USD:,.0f}")
-    log.info(f"  Interval  : {POLL_INTERVAL_SECONDS}s")
-    log.info(f"  Page size : {TRADES_PAGE_SIZE}")
+    log.info(f"  Threshold  : ${MIN_TRADE_SIZE_USD:,.0f}")
+    log.info(f"  Interval   : {POLL_INTERVAL_SECONDS}s")
+    log.info(f"  Page size  : {TRADES_PAGE_SIZE}")
+    log.info(f"  +PnL only  : {REQUIRE_POSITIVE_PNL}")
+    log.info(f"  Min win %  : {MIN_WIN_RATE * 100:.0f}%")
 
     tg(
         f"🐋 <b>Whale Watcher started</b>\n"
         f"Alerting on trades ≥ <b>${MIN_TRADE_SIZE_USD:,.0f}</b>\n"
+        f"Filters: positive PnL={REQUIRE_POSITIVE_PNL}, win rate ≥ {MIN_WIN_RATE * 100:.0f}%\n"
         f"Polling every <b>{POLL_INTERVAL_SECONDS}s</b>",
     )
 
@@ -304,8 +345,8 @@ def main():
                             f"{trade.price} | {trade.title} | wallet={trade.wallet}"
                         )
 
-                        # Fetch wallet stats before sending — included in the alert.
-                        # If this fails for any reason, we still send the alert without stats.
+                        # Fetch wallet stats before sending — used both for filtering
+                        # and for display in the alert.
                         wallet_str = str(trade.wallet) if trade.wallet else None
                         stats = None
                         if wallet_str:
@@ -318,6 +359,12 @@ def main():
                                 )
                             except Exception as e:
                                 log.warning(f"Stats fetch failed for {wallet_str[:10]}…: {e}")
+
+                        # Quality filter: skip negative-PnL or low-win-rate wallets
+                        ok, reason = _passes_quality_filter(stats)
+                        if not ok:
+                            log.info(f"Skipping trade — {reason} | wallet={wallet_str}")
+                            continue
 
                         try:
                             tg(_format_alert(trade, stats=stats))

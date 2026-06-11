@@ -10,7 +10,7 @@ Required keys in .env:
   HTTP_PROXY         — Same proxy URL for HTTP
 
 Optional keys (with defaults):
-  WHALE_MIN_SIZE_USD   — Minimum trade USD value to alert on (default: 15000)
+  WHALE_MIN_SIZE_USD   — Minimum trade USD value to alert on (default: 30000)
   WHALE_POLL_INTERVAL  — Seconds between polls (default: 20)
   WHALE_PAGE_SIZE      — Trades fetched per poll (default: 50)
 """
@@ -31,10 +31,18 @@ TELEGRAM_CHAT_ID: str = os.getenv('PERSONAL_CHAT_ID', '')
 
 # --- Bot behavior ---
 # Minimum USDC value (size × price) required to trigger a whale alert
-MIN_TRADE_SIZE_USD: float = float(os.getenv('WHALE_MIN_SIZE_USD', '15000'))
+MIN_TRADE_SIZE_USD: float = float(os.getenv('WHALE_MIN_SIZE_USD', '30000'))
 
 # Seconds to wait between each poll of the trades endpoint
 POLL_INTERVAL_SECONDS: int = int(os.getenv('WHALE_POLL_INTERVAL', '20'))
+
+# --- Quality filters ---
+# Skip alert if the whale's lifetime PnL is negative (they're a net loser overall)
+REQUIRE_POSITIVE_PNL: bool = os.getenv('WHALE_REQUIRE_POSITIVE_PNL', 'true').lower() == 'true'
+
+# Skip alert if the whale's win rate (on sampled closed positions) is below this threshold.
+# Value is a fraction: 0.60 = 60%.
+MIN_WIN_RATE: float = float(os.getenv('WHALE_MIN_WIN_RATE', '0.60'))
 
 # Number of recent trades to fetch per poll.
 # Keep this high enough that no whale trade slips between two polls.

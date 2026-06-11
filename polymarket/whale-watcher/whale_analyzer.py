@@ -93,7 +93,7 @@ def _fetch_pnl(wallet: str, client: PublicClient) -> float | None:
     Returns a float in USD, or None on any failure.
     """
     try:
-        page = client.list_trader_leaderboard(user=wallet, page_size=1).first_page()
+        page = client.list_trader_leaderboard(user=wallet, time_period="ALL", page_size=1).first_page()
         if page.items:
             pnl = page.items[0].pnl
             return float(pnl) if pnl is not None else None
@@ -120,8 +120,12 @@ def _fetch_win_rate(wallet: str, client: PublicClient) -> dict:
     empty = {'win_rate': None, 'wins': 0, 'losses': 0}
 
     try:
+        # TIMESTAMP DESC = most recent positions first, avoiding the default
+        # REALIZEDPNL DESC sort which only shows winners and inflates win rate.
         page = client.list_closed_positions(
             user=wallet,
+            sort_by="TIMESTAMP",
+            sort_direction="DESC",
             page_size=CLOSED_POSITIONS_SAMPLE,
         ).first_page()
     except Exception as e:
