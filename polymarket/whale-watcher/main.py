@@ -248,12 +248,31 @@ def tg_error(msg: str) -> None:
 # Trade fetching
 # ──────────────────────────────────────────────────────────────────────────────
 
-_VS_PATTERN = re.compile(r'\bvs\.?\b', re.IGNORECASE)
+_VS_PATTERN       = re.compile(r'\bvs\.?\b', re.IGNORECASE)
+_SPREAD_PATTERN   = re.compile(r'^Spread:', re.IGNORECASE)
+_WILL_WIN_PATTERN = re.compile(r'\bWill\b.+\bwin\b.+\bon\b', re.IGNORECASE)
+
+# Price cap: skip near-certain outcomes (≥ 95¢) — large $ size at high
+# probability is usually just liquidity, not meaningful signal.
+MAX_PRICE = Decimal('0.95')
 
 
-def _is_sports_market(title: str | None) -> bool:
-    """Return True if the market title looks like a sports matchup (Team A vs Team B)."""
-    return bool(title and _VS_PATTERN.search(title))
+def _is_noise_market(title: str | None) -> bool:
+    """
+    Return True if the market should be filtered out based on its title.
+
+    Covers:
+      - Sports matchups  ("Team A vs Team B")
+      - Spread markets   ("Spread: ...")
+      - World Cup game winners ("Will X win on <date>")
+    """
+    if not title:
+        return False
+    return bool(
+        _VS_PATTERN.search(title)
+        or _SPREAD_PATTERN.search(title)
+        or _WILL_WIN_PATTERN.search(title)
+    )
 
 
 def fetch_whale_trades(client: PublicClient) -> list:
@@ -278,7 +297,8 @@ def fetch_whale_trades(client: PublicClient) -> list:
     return [
         t for t in trades
         if (t.size or Decimal(0)) * (t.price or Decimal(0)) >= min_usd
-        and not _is_sports_market(t.title)
+        and (t.price or Decimal(0)) < MAX_PRICE
+        and not _is_noise_market(t.title)
     ]
 
 
